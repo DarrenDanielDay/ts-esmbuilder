@@ -39,6 +39,10 @@ function tsc() {
   });
   /** @type {ts.TransformerFactory<ts.SourceFile>} */
   const factory = (context) => {
+    /**
+     * @param {string} text
+     */
+    const replaceImportClauseText = (text) => (text.match(/\.m?js$/) ? text : text + ".js");
     return (root) => {
       return ts.visitNode(root, function visit(node) {
         if (ts.isImportDeclaration(node)) {
@@ -49,7 +53,7 @@ function tsc() {
               decorators,
               modifiers,
               importClause,
-              ts.factory.createStringLiteral(text + ".js", false),
+              ts.factory.createStringLiteral(replaceImportClauseText(text), false),
               assertClause
             );
           }
@@ -63,7 +67,7 @@ function tsc() {
               modifiers,
               isTypeOnly,
               exportClause,
-              ts.factory.createStringLiteral(text + ".js", false),
+              ts.factory.createStringLiteral(replaceImportClauseText(text), false),
               assertClause
             );
           }
