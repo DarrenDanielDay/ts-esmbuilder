@@ -42,7 +42,7 @@ function tsc() {
     /**
      * @param {string} text
      */
-    const replaceImportClauseText = (text) => (text.match(/\.m?js$/) ? text : text + ".js");
+    const replaceImportClauseText = (text) => (/\.m?js$/.test(text) || /^[^\.]/.test(text) ? text : text + ".js");
     return (root) => {
       return ts.visitNode(root, function visit(node) {
         if (ts.isImportDeclaration(node)) {
