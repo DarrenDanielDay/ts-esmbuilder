@@ -6,6 +6,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 // @ts-check
+import { parse } from "path";
 import ts from "typescript";
 const message = "✨ Done in ";
 console.time(message);
@@ -39,10 +40,11 @@ function tsc() {
   });
   /** @type {ts.TransformerFactory<ts.SourceFile>} */
   const factory = (context) => {
+    const keepExtensions = new Set([".cjs", ".mjs", ".json"]);
     /**
      * @param {string} text
      */
-    const replaceImportClauseText = (text) => (/\.m?js$/.test(text) || /^[^\.]/.test(text) ? text : text + ".js");
+    const replaceImportClauseText = (text) => (keepExtensions.has(parse(text).ext) || /^[^\.]/.test(text) ? text : text + ".js");
     return (root) => {
       return ts.visitNode(root, function visit(node) {
         if (ts.isImportDeclaration(node)) {
