@@ -36,24 +36,48 @@ async function tsc() {
   }
   //#endregion
   const { options, fileNames, projectReferences } = parsed;
+  //#region AST utils
+  /**
+   * @template E
+   * @param {Record<string, E>} obj
+   * @returns {(e: Exclude<E, string>) => string}
+   */
+  const enumName = (obj) => {
+    const mapping = Object.fromEntries(Object.entries(obj).map(([k, v]) => [v, k]));
+    return (kind) => mapping[kind];
+  };
+  const syntaxKindText = (() => {
+    return enumName(ts.SyntaxKind);
+  })();
+  //#endregion
+
   //#region jsx utils
-  const { jsx } = options;
+  const jsx = options.jsx ?? ts.JsxEmit.React;
   const hasJSXOutput = jsx === ts.JsxEmit.Preserve || jsx === ts.JsxEmit.ReactNative;
+  (() => {
+    if (jsx !== ts.JsxEmit.React) {
+      console.warn(`compilerOptions.jsx: ${enumName(ts.JsxEmit)(jsx)}`);
+    }
+  })();
   /**
    * @param {string} ext extension
    */
   const ifJSX = (ext) => (hasJSXOutput ? [ext] : []);
+  const jsxFactory = () =>
+    ts.factory.createPropertyAccessExpression(
+      ts.factory.createIdentifier(options.reactNamespace ?? "React"),
+      "createElement"
+    );
   /**
    * Transform JSX element.
    * Currently only support "react".
-   * @param {ts.JsxElement} node jsx element node
+   * @param {ts.JsxElement | ts.JsxSelfClosingElement} node jsx element node
+   * @param {boolean} [pure]
    */
-  const transformJSXElement = (node) => {
-    if (jsx !== ts.JsxEmit.React) {
-      return node;
-    }
-    const jsxFactory = ts.factory.createPropertyAccessExpression(ts.factory.createIdentifier("React"), "createElement");
-    const element = node.openingElement;
+  const transformJSXElement = (node, pure) => {
+    const element = ts.isJsxElement(node) ? node.openingElement : node;
+    /** @type {readonly ts.JsxChild[]} */
+    const children = ts.isJsxElement(node) ? node.children : [];
     /** @type {ts.ObjectLiteralElementLike[]} */
     const properties = element.attributes.properties.map((prop) => {
       if (ts.isJsxSpreadAttribute(prop)) {
@@ -61,18 +85,61 @@ async function tsc() {
       }
       return ts.factory.createPropertyAssignment(prop.name, prop.initializer ?? ts.factory.createTrue());
     });
-    const reactCreateElement = ts.factory.createCallExpression(jsxFactory, undefined, [
-      node.openingElement.tagName,
+    const reactCreateElement = ts.factory.createCallExpression(jsxFactory(), undefined, [
+      element.tagName,
       ts.factory.createObjectLiteralExpression(properties, true),
+      ...transformJSXChildren(children, pure),
     ]);
-    return reactCreateElement;
+    return pure ? wrapWithPureComment(reactCreateElement) : reactCreateElement;
   };
-  const pure = " @__PURE__ ";
+  /**
+   * Transform JSX child element.
+   * @param {ts.JsxChild} node jsx child node
+   * @param {boolean} [pure]
+   * @returns {ts.Expression[]}
+   */
+  const transformJSXChild = (node, pure) => {
+    if (ts.isJsxText(node)) {
+      return [ts.factory.createStringLiteral(node.text)];
+    }
+    if (ts.isJsxExpression(node)) {
+      return node.expression ? [node.expression] : [];
+    }
+    if (ts.isJsxElement(node) || ts.isJsxSelfClosingElement(node)) {
+      return [transformJSXElement(node, pure)];
+    }
+    if (ts.isJsxFragment(node)) {
+      return [transformJSXFragment(node, pure)];
+    }
+    // @ts-expect-error `never` type
+    throw new Error(`Unknown JSX child type: ${syntaxKindText(node.kind)}`);
+  };
+  /**
+   *
+   * @param {readonly ts.JsxChild[]} children
+   * @param {boolean} [pure]
+   */
+  const transformJSXChildren = (children, pure) => {
+    const mappedChildren = children.flatMap((child) => transformJSXChild(child, pure));
+    return mappedChildren.length ? mappedChildren : [ts.factory.createNull()];
+  };
+  /**
+   * Transform JSX fragment
+   * @param {ts.JsxFragment} node jsx fragment node
+   * @param {boolean} [pure]
+   */
+  const transformJSXFragment = (node, pure) => {
+    const createFragment = ts.factory.createCallExpression(jsxFactory(), [], transformJSXChildren(node.children, pure));
+    return pure ? wrapWithPureComment(createFragment) : createFragment;
+  };
+  const pureComment = " @__PURE__ ";
   /**
    * Add ` @__PURE__ ` comment for node.
-   * @param {ts.Node} node
+   * @template {ts.Node} T
+   * @param {T} node
    */
-  const wrapWithPureComment = (node) => ts.addSyntheticLeadingComment(node, ts.SyntaxKind.MultiLineCommentTrivia, pure);
+  const wrapWithPureComment = (node) =>
+    ts.addSyntheticLeadingComment(node, ts.SyntaxKind.MultiLineCommentTrivia, pureComment);
   //#endregion
 
   const compiler = ts.createCompilerHost(parsed.options);
@@ -89,7 +156,7 @@ async function tsc() {
     return (root) => {
       return ts.visitNode(root, function visit(node) {
         if (ts.isJsxElement(node)) {
-          return wrapWithPureComment(transformJSXElement(node));
+          return transformJSXElement(node, true);
         }
         return ts.visitEachChild(node, visit, context);
       });
